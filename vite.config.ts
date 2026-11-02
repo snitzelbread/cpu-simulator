@@ -4,7 +4,7 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
   plugins: [react()],
-  build: { chunkSizeWarningLimit: 900 },
+  build: { chunkSizeWarningLimit: 1300 },
   test: {
     include: ['src/**/*.test.ts'],
     environment: 'node',

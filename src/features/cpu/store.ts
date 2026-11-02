@@ -3,7 +3,7 @@
  * React; components subscribe to `version`, which is bumped after every change.
  */
 import { create } from 'zustand'
-import { assemble, type AssembleResult } from '../../core/assembler'
+import { assemble, type AssembleResult, type Program } from '../../core/assembler'
 import { Machine } from '../../core/cpu/machine'
 import { EXAMPLES } from '../../examples'
 
@@ -14,6 +14,16 @@ export const SPEEDS = [1, 2, 4, 8, 16, 50, 200, 1000]
 export type MicroPhase = 0 | 1 | 2 | 3 | null
 
 export type Notice = { kind: 'stepLimit'; steps: number } | { kind: 'reset' } | null
+
+/** A program built by the C toolchain (linked image + listing + C line mapping). */
+export interface LinkedProgram {
+  listing: string
+  program: Program
+  /** C source location for each listing line (index = line - 1). */
+  cLines: ({ file: string; line: number } | null)[]
+  /** C source files, for showing the current C line. */
+  cFiles: { name: string; text: string }[]
+}
 
 interface CpuState {
   source: string
@@ -28,6 +38,10 @@ interface CpuState {
   microPhase: MicroPhase
   speedIndex: number
   cursorLine: number
+  /** Set while the CPU runs a program from the C toolchain (the editor is read-only). */
+  linked: LinkedProgram | null
+  /** The user's own assembly, kept while a linked program is shown. */
+  savedSource: string | null
 
   setSource(src: string): void
   loadExample(id: string): void
@@ -44,6 +58,9 @@ interface CpuState {
   setMicroMode(on: boolean): void
   setSpeedIndex(i: number): void
   dismissNotice(): void
+  loadLinked(p: LinkedProgram): void
+  /** Leave the linked program: 'edit' keeps the listing as editable assembly, 'restore' brings back the user's own source. */
+  unlink(how: 'edit' | 'restore'): void
 }
 
 const SOURCE_KEY = 'cpusim.source'
@@ -95,9 +112,11 @@ export const useCpu = create<CpuState>((set, get) => {
     microPhase: null,
     speedIndex: 3,
     cursorLine: 1,
+    linked: null,
+    savedSource: null,
 
     setSource(source) {
-      if (source === get().source) return
+      if (source === get().source || get().linked) return
       stopLoop()
       clearTimeout(saveTimer)
       saveTimer = setTimeout(() => localStorage.setItem(SOURCE_KEY, source), 300)
@@ -108,6 +127,7 @@ export const useCpu = create<CpuState>((set, get) => {
     loadExample(id) {
       const ex = EXAMPLES.find((e) => e.id === id)
       if (!ex) return
+      set({ linked: null, savedSource: null })
       get().setSource(ex.source)
       set({ breakpoints: [], notice: null })
     },
@@ -248,6 +268,37 @@ export const useCpu = create<CpuState>((set, get) => {
 
     dismissNotice() {
       set({ notice: null })
+    },
+
+    loadLinked(p) {
+      stopLoop()
+      const st = get()
+      const asm: AssembleResult = { program: p.program, symbols: p.program.symbols, sourceMap: p.program.sourceMap, errors: [] }
+      bump({
+        linked: p,
+        savedSource: st.linked ? st.savedSource : st.source,
+        source: p.listing,
+        asm,
+        machine: new Machine(p.program),
+        breakpoints: [],
+        running: false,
+        microPhase: null,
+        notice: null,
+      })
+    },
+
+    unlink(how) {
+      const { savedSource, source } = get()
+      if (how === 'restore') {
+        set({ linked: null, savedSource: null })
+        if (savedSource !== null) get().setSource(savedSource)
+      } else {
+        // keep savedSource: "My program" stays available until the user restores it or loads an example
+        set({ linked: null })
+        // the listing becomes normal, editable assembly (assembled again from its text)
+        localStorage.setItem(SOURCE_KEY, source)
+        bump({ ...build(source), running: false, microPhase: null })
+      }
     },
   }
 })

@@ -4,6 +4,12 @@ import type { Size } from './util'
 
 export type Scale = 1 | 2 | 4 | 8
 
+/**
+ * What an address in an object file is relative to: the start of one of the file's own
+ * sections (local labels, as in ELF section symbols) or an external symbol.
+ */
+export type SymTerm = { kind: 'section'; section: 'text' | 'data' | 'bss'; label?: string } | { kind: 'extern'; name: string }
+
 export interface RegOperand {
   k: 'reg'
   reg: RegInfo
@@ -21,6 +27,8 @@ export interface MemOperand {
   /** RIP-relative encoding (via `rel` or `default rel`). The effective address is still `disp`. */
   ripRel: boolean
   text: string
+  /** Object files only: `disp` is relative to this (section offset or extern symbol). */
+  term?: SymTerm
 }
 
 export interface ImmOperand {
@@ -32,6 +40,8 @@ export interface ImmOperand {
   unresolved?: boolean
   /** Value is an address (depends on a label). NASM never shrinks such immediates. */
   reloc?: boolean
+  /** Object files only: `value` is relative to this (section offset or extern symbol). */
+  term?: SymTerm
 }
 
 export type Operand = RegOperand | MemOperand | ImmOperand

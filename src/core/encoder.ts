@@ -29,6 +29,13 @@ export interface Encoded {
   opSize?: Size
   /** For jmp/jcc: whether the chosen short form could not reach the target. */
   jumpOutOfRange?: boolean
+  /** Byte positions of the displacement, immediate and branch offset (object files patch these). */
+  fields: { disp?: Field; imm?: Field; rel?: Field }
+}
+
+export interface Field {
+  offset: number
+  size: number
 }
 
 type RM = RegOperand | MemOperand
@@ -58,6 +65,9 @@ const SHIFT: Partial<Record<Op, number>> = { rol: 0, ror: 1, shl: 4, sal: 4, shr
 const UNARY: Partial<Record<Op, [number, number]>> = {
   inc: [0xfe, 0], dec: [0xfe, 1], not: [0xf6, 2], neg: [0xf6, 3], mul: [0xf6, 4], imul: [0xf6, 5], div: [0xf6, 6], idiv: [0xf6, 7],
 }
+
+/** Sign-extension instructions and their operation size (the destination width). */
+export const SIGN_EXT: Partial<Record<Op, Size>> = { cbw: 2, cwde: 4, cdqe: 8, cwd: 2, cdq: 4, cqo: 8 }
 
 const isReg = (o: Operand | undefined): o is RegOperand => o?.k === 'reg'
 const isMem = (o: Operand | undefined): o is MemOperand => o?.k === 'mem'
@@ -233,6 +243,8 @@ function plan(ins: EncodeInput, longJump: boolean): Parts {
       if (!isReg(a) || !isRM(b)) fail('invalidOperands', { name: ins.mnemonic })
       const ss = needSize(b)
       const ds = a.reg.size
+      // NASM shortens sign-extension of the accumulator into itself: cbw / cwde / cdqe
+      if (op !== 'movzx' && isAcc(a) && isReg(b) && isAcc(b) && ss * 2 === ds) return sizeParts(ds, { opcode: [0x98] })
       if (op === 'movsxd' || (op === 'movsx' && ss === 4)) {
         if (ds !== 8 || ss !== 4) fail('invalidOperands', { name: ins.mnemonic })
         return sizeParts(8, { opcode: [0x63], modReg: a.reg, modRM: b })
@@ -339,6 +351,16 @@ function plan(ins: EncodeInput, longJump: boolean): Parts {
       const s = pairSize(a, b)
       return sizeParts(s, { opcode: [0x0f, 0x40 + ins.cond!.code], modReg: a.reg, modRM: b })
     }
+    case 'cbw':
+    case 'cwde':
+    case 'cdqe':
+    case 'cwd':
+    case 'cdq':
+    case 'cqo': {
+      count(ops, 0)
+      const size = SIGN_EXT[op]!
+      return sizeParts(size, { opcode: [op === 'cbw' || op === 'cwde' || op === 'cdqe' ? 0x98 : 0x99] })
+    }
     case 'nop':
       count(ops, 0)
       return { opcode: [0x90] }
@@ -389,7 +411,9 @@ function encodeMem(m: MemOperand): MemEnc {
   const base = m.base
   const low = base.index & 7
   let mod: number
-  if (disp === 0n && low !== 5) mod = 0
+  // An address that is only known after linking always gets a full disp32 (as in NASM).
+  if (m.term) mod = 2
+  else if (disp === 0n && low !== 5) mod = 0
   else if (fitsSigned(disp, 1)) mod = 1
   else mod = 2
   const dispBytes = mod === 0 ? [] : le(disp, mod === 1 ? 1 : 4)
@@ -450,8 +474,15 @@ export function encode(ins: EncodeInput, opts: EncodeOptions): Encoded {
   if (modrm !== undefined) bytes.push(modrm)
   if (mem?.sib !== undefined) bytes.push(mem.sib)
   const dispPos = bytes.length
-  if (mem) bytes.push(...mem.disp)
-  if (p.imm) bytes.push(...le(p.imm.value, p.imm.size))
+  const fields: Encoded['fields'] = {}
+  if (mem) {
+    if (mem.disp.length) fields.disp = { offset: dispPos, size: mem.disp.length }
+    bytes.push(...mem.disp)
+  }
+  if (p.imm) {
+    fields.imm = { offset: bytes.length, size: p.imm.size }
+    bytes.push(...le(p.imm.value, p.imm.size))
+  }
 
   let jumpOutOfRange = false
   if (p.rel) {
@@ -461,6 +492,7 @@ export function encode(ins: EncodeInput, opts: EncodeOptions): Encoded {
       if (p.rel.size === 1) jumpOutOfRange = true
       else fail('jumpOutOfRange')
     }
+    fields.rel = { offset: bytes.length, size: p.rel.size }
     bytes.push(...le(d, p.rel.size))
   }
   if (mem?.ripRel) {
@@ -469,5 +501,5 @@ export function encode(ins: EncodeInput, opts: EncodeOptions): Encoded {
     if (!fitsSigned(d, 4)) fail('addressTooLarge', { value: m.text })
     bytes.splice(dispPos, 4, ...le(d, 4))
   }
-  return { bytes, opSize: p.opSize, jumpOutOfRange }
+  return { bytes, opSize: p.opSize, jumpOutOfRange, fields }
 }

@@ -3,13 +3,16 @@ import { useEffect } from 'react'
 import { EXAMPLES } from '../examples'
 import { CpuView } from '../features/cpu/CpuView'
 import { useCpu } from '../features/cpu/store'
+import { useToolchain } from '../features/toolchain/store'
 import { ToolchainView } from '../features/toolchain/ToolchainView'
+import { TOOLCHAIN_EXAMPLES } from '../toolchain/examples'
 import { t } from '../i18n'
 import { useSettings, type Mode, type NumberFormat } from './settings'
 
 export function App() {
   const s = useSettings()
   const loadExample = useCpu((st) => st.loadExample)
+  const loadCExample = useToolchain((st) => st.loadExample)
   const C = t().controls
 
   useEffect(() => {
@@ -53,6 +56,25 @@ export function App() {
               </select>
             </label>
           )}
+          {s.mode === 'toolchain' && (
+            <label className="select">
+              <span className="visually-hidden">{t().tc.examples}</span>
+              <select
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) loadCExample(e.target.value)
+                }}
+              >
+                <option value="">{t().tc.examples}</option>
+                {TOOLCHAIN_EXAMPLES.map((ex) => (
+                  <option key={ex.id} value={ex.id}>
+                    {ex.title}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {s.mode === 'cpu' && (
           <div className="segmented" role="radiogroup" aria-label={C.format}>
             {formats.map((f) => (
               <button key={f} type="button" role="radio" aria-checked={s.format === f} className={s.format === f ? 'is-active' : ''} onClick={() => s.set({ format: f })}>
@@ -60,6 +82,7 @@ export function App() {
               </button>
             ))}
           </div>
+          )}
           <button
             type="button"
             className={'icon-btn' + (s.animations ? ' is-active' : '')}

@@ -521,6 +521,23 @@ export class Machine {
       }
       case 'syscall':
         return this.syscall()
+      case 'cbw':
+      case 'cwde':
+      case 'cdqe': {
+        // AX ← sign-extend(AL), EAX ← sign-extend(AX), RAX ← sign-extend(EAX)
+        const half = (size / 2) as Size
+        const v = this.readReg(this.reg(RAX, half))
+        this.writeReg(this.reg(RAX, size), trunc(toSigned(v, half), size))
+        return
+      }
+      case 'cwd':
+      case 'cdq':
+      case 'cqo': {
+        // DX:AX / EDX:EAX / RDX:RAX ← sign-extend(AX / EAX / RAX); RDX gets copies of the sign bit
+        const v = this.readReg(this.reg(RAX, size))
+        this.writeReg(this.reg(RDX, size), msb(v, size) ? mask(size) : 0n)
+        return
+      }
     }
   }
 

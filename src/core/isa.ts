@@ -66,6 +66,7 @@ export const BASE_MNEMONICS = [
   'add', 'sub', 'inc', 'dec', 'neg', 'adc', 'sbb', 'mul', 'imul', 'div', 'idiv',
   'and', 'or', 'xor', 'not', 'shl', 'sal', 'shr', 'sar', 'rol', 'ror',
   'cmp', 'test', 'jmp', 'call', 'ret', 'loop', 'nop', 'hlt', 'syscall',
+  'cbw', 'cwde', 'cdqe', 'cwd', 'cdq', 'cqo',
 ] as const
 
 export type Op =
@@ -103,7 +104,7 @@ export const KNOWN_UNSUPPORTED = new Set([
   'cpuid', 'int', 'int3', 'iret', 'iretq', 'cli', 'sti', 'in', 'out', 'rdtsc', 'leave', 'enter',
   'movs', 'movsb', 'movsw', 'movsd', 'movsq', 'stosb', 'stosq', 'lodsb', 'rep', 'cmpxchg', 'xadd',
   'bswap', 'bt', 'bts', 'btr', 'btc', 'bsf', 'bsr', 'popcnt', 'lzcnt', 'tzcnt', 'rcl', 'rcr', 'shld',
-  'shrd', 'cbw', 'cwde', 'cdqe', 'cwd', 'cdq', 'cqo', 'pushf', 'popf', 'pushfq', 'popfq', 'lahf',
+  'shrd', 'pushf', 'popf', 'pushfq', 'popfq', 'lahf',
   'sahf', 'clc', 'stc', 'cmc', 'cld', 'std', 'jrcxz', 'jecxz', 'loope', 'loopne', 'loopz', 'loopnz',
   'sysenter', 'movaps', 'movq', 'movd', 'pause', 'ud2', 'xlat', 'lock',
 ])

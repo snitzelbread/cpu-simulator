@@ -20,6 +20,7 @@ export type Stmt =
   | { kind: 'equ'; name: string; expr: Expr; line: number }
   | { kind: 'section'; name: 'text' | 'data' | 'bss'; line: number }
   | { kind: 'global'; names: string[]; line: number }
+  | { kind: 'extern'; names: string[]; line: number }
   | { kind: 'default'; rel: boolean; line: number }
 
 export interface ParseResult {
@@ -31,7 +32,7 @@ const SIZE_KW: Record<string, Size> = { byte: 1, word: 2, dword: 4, qword: 8 }
 const DATA_KW: Record<string, Size> = { db: 1, dw: 2, dd: 4, dq: 8 }
 const RES_KW: Record<string, Size> = { resb: 1, resw: 2, resd: 4, resq: 8 }
 const UNSUPPORTED_DIRECTIVES = new Set([
-  'extern', 'org', 'align', 'alignb', 'dt', 'ddq', 'do', 'dy', 'dz', 'rest', 'reso', 'incbin',
+  'org', 'align', 'alignb', 'dt', 'ddq', 'do', 'dy', 'dz', 'rest', 'reso', 'incbin',
   'common', 'static', 'cpu', 'struc', 'endstruc', 'istruc', 'at', 'iend', 'absolute', 'use16', 'use32',
 ])
 
@@ -78,7 +79,7 @@ class LineParser {
     let size: Size | undefined
     let i = 0
     const first = toks[0]
-    if (first.t === 'id' && first.v.toLowerCase() in SIZE_KW) {
+    if (first.t === 'id' && !first.raw && first.v.toLowerCase() in SIZE_KW) {
       size = SIZE_KW[first.v.toLowerCase()]
       i = 1
       const nxt = toks[1]
@@ -93,14 +94,14 @@ class LineParser {
       let inner = rest.slice(1, -1)
       let rel: boolean | undefined
       const kw = inner[0]
-      if (kw && kw.t === 'id' && ['rel', 'abs'].includes(kw.v.toLowerCase())) {
+      if (kw && kw.t === 'id' && !kw.raw && ['rel', 'abs'].includes(kw.v.toLowerCase())) {
         rel = kw.v.toLowerCase() === 'rel'
         inner = inner.slice(1)
       }
       if (inner.length >= 2 && inner[1].t === 'op' && inner[1].v === ':') fail('segmentOverride')
       return { k: 'mem', size, expr: this.expr(inner), rel, text }
     }
-    if (rest.length === 1 && rest[0].t === 'id') {
+    if (rest.length === 1 && rest[0].t === 'id' && !rest[0].raw) {
       const reg = lookupRegister(rest[0].v)
       if (reg) {
         if (size && size !== reg.size) fail('sizeMismatch')
@@ -162,7 +163,7 @@ export function parse(source: string): ParseResult {
         return q
       }
       let labelName: string | undefined
-      if (toks.length >= 2 && toks[0].t === 'id' && toks[1].t === 'op' && toks[1].v === ':' && !lookupRegister(toks[0].v)) {
+      if (toks.length >= 2 && toks[0].t === 'id' && toks[1].t === 'op' && toks[1].v === ':' && (toks[0].raw || !lookupRegister(toks[0].v))) {
         const name0 = toks[0].v
         toks = toks.slice(2)
         if (toks[0]?.t === 'id' && toks[0].v.toLowerCase() === 'equ') {
@@ -194,8 +195,8 @@ export function parse(source: string): ParseResult {
         if (args.length !== 1 || args[0].t !== 'num' || args[0].v !== 64n) fail('unsupportedDirective', { name: tokText(toks) })
         return
       }
-      if (word === 'global') {
-        stmts.push({ kind: 'global', names: args.filter((t) => t.t === 'id').map((t) => String(t.v)), line })
+      if (word === 'global' || word === 'extern') {
+        stmts.push({ kind: word, names: args.filter((t) => t.t === 'id').map((t) => String(t.v)), line })
         return
       }
       if (word === 'default') {

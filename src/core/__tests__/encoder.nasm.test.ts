@@ -69,6 +69,27 @@ movsx rax, al
 movsx eax, byte [rbx]
 movsx rax, word [rbx]
 movsxd rax, ebx
+cbw
+cwde
+movsxd rax, eax
+movsx eax, ax
+movsx ax, al
+movsx eax, al
+movsxd rcx, eax
+cdqe
+cwd
+cdq
+cqo
+shl eax, cl
+sar rax, cl
+shr r8d, cl
+imul eax, ecx
+imul rax, rcx, 24
+movzx eax, al
+movsx eax, word [rbp-2]
+mov dword [rbp-4], edi
+mov qword [rbp-16], rsi
+lea rax, [rbp-48]
 movsxd rax, dword [rbx]
 lea rax, [rbx+rcx*4+8]
 lea eax, [rbx+1]

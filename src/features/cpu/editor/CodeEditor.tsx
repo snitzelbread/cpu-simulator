@@ -168,6 +168,7 @@ export function CodeEditor() {
   const machine = useCpu((s) => s.machine)
   const version = useCpu((s) => s.version)
   const running = useCpu((s) => s.running)
+  const linked = useCpu((s) => !!s.linked)
   const phase = useCpu((s) => s.microPhase)
   const showBytes = useSettings((s) => s.showBytes)
 
@@ -202,7 +203,7 @@ export function CodeEditor() {
           nasmLanguage,
           nasmHighlight,
           editorTheme,
-          readOnly.current.of(EditorState.readOnly.of(false)),
+          readOnly.current.of(EditorState.readOnly.of(!!useCpu.getState().linked)),
           EditorView.contentAttributes.of({ 'aria-label': t().panels.code, spellcheck: 'false' }),
           EditorView.updateListener.of((u) => {
             const st = useCpu.getState()
@@ -234,8 +235,8 @@ export function CodeEditor() {
   }, [source])
 
   useEffect(() => {
-    viewRef.current!.dispatch({ effects: readOnly.current.reconfigure(EditorState.readOnly.of(running)) })
-  }, [running])
+    viewRef.current!.dispatch({ effects: readOnly.current.reconfigure(EditorState.readOnly.of(running || linked)) })
+  }, [running, linked])
 
   useEffect(() => {
     viewRef.current!.dispatch({ effects: bytesComp.current.reconfigure(addrGutter(showBytes)) })

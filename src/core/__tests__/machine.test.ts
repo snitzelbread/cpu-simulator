@@ -284,6 +284,24 @@ describe('memory', () => {
   it('writes into .text fault', () => {
     expect(run('mov byte [0x401000], 0').fault?.code).toBe('writeToCode')
   })
+  it('cbw / cwde / cdqe sign-extend the accumulator', () => {
+    const m = run('mov rax, -1\nmov al, 0x80\ncbw\nmov rbx, rax\nmov rax, 0x1234567800008000\ncwde\nmov rcx, rax\nmov eax, 0x80000000\ncdqe')
+    expect(reg(m, 'rbx')).toBe(0xffffffffffffff80n)
+    expect(reg(m, 'rcx')).toBe(0xffff8000n) // 32-bit write zero-extends
+    expect(reg(m, 'rax')).toBe(0xffffffff80000000n)
+  })
+  it('cwd / cdq / cqo fill rdx with the sign bit', () => {
+    const m = run('mov rdx, -1\nmov eax, 5\ncdq\nmov rbx, rdx\nmov eax, -7\ncdq\nmov rcx, rdx\nmov rax, -1\ncqo\nmov rsi, rdx\nmov rdx, 0\nmov ax, 0x8000\ncwd')
+    expect(reg(m, 'rbx')).toBe(0n)
+    expect(reg(m, 'rcx')).toBe(0xffffffffn)
+    expect(reg(m, 'rsi')).toBe(0xffffffffffffffffn)
+    expect(reg(m, 'rdx')).toBe(0xffffn)
+  })
+  it('cdq + idiv divides negative 32-bit numbers', () => {
+    const m = run('mov eax, -7\ncdq\nmov ecx, 2\nidiv ecx')
+    expect(reg(m, 'eax')).toBe(0xfffffffdn)
+    expect(reg(m, 'edx')).toBe(0xffffffffn)
+  })
   it('movsx / movsxd sign-extend', () => {
     const m = run('mov bl, 0x80\nmovsx rax, bl\nmov ecx, -2\nmovsxd rdx, ecx\nmovsx si, bl')
     expect(reg(m, 'rax')).toBe(0xffffffffffffff80n)

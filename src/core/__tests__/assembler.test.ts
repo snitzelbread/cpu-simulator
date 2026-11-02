@@ -130,7 +130,8 @@ describe('errors point at the offending line', () => {
   it('movzx from 32 bit', () => expect(errorOf('movzx rax, ebx').code).toBe('movzx32'))
   it('immediate too large for byte', () => expect(errorOf('mov al, 256').code).toBe('immOutOfRange'))
   it('instruction in .data', () => expect(errorOf('section .data\nmov rax, 1').code).toBe('instrOutsideText'))
-  it('unsupported directive', () => expect(errorOf('extern printf\nnop').code).toBe('unsupportedDirective'))
+  it('unsupported directive', () => expect(errorOf('org 0x100\nnop').code).toBe('unsupportedDirective'))
+  it('extern needs the linker', () => expect(errorOf('extern printf\nnop').code).toBe('externNeedsLinker'))
   it('reports multiple errors', () => {
     expect(assemble('cpuid\nnop\nfoo rax').errors.map((e) => e.line)).toEqual([1, 3])
   })

@@ -62,6 +62,14 @@ export function computeFlows(tr: StepTrace): Flow[] {
       for (const i of regDests) add(src(s), reg(i), kindOf(s), 1)
       if (memWrite) add(src(s), 'bus', 'mem', 1)
       break
+    case 'cbw':
+    case 'cwde':
+    case 'cdqe':
+    case 'cwd':
+    case 'cdq':
+    case 'cqo':
+      for (const i of regDests) add(reg(0), reg(i), 'data', 1)
+      break
     case 'lea':
       if (s.k === 'mem') for (const r of [s.base, s.index]) if (r) add(reg(r.index), reg(regDests[0]), 'data', 1)
       if (s.k === 'mem' && !s.base && !s.index) add('ir', reg(regDests[0]), 'data', 1)

@@ -69,7 +69,7 @@ export class ExprParser {
       return e
     }
     if (t.t === 'id') {
-      const reg = lookupRegister(t.v)
+      const reg = t.raw ? undefined : lookupRegister(t.v)
       if (reg) return { k: 'reg', reg }
       return { k: 'sym', name: this.qualify(t.v) }
     }

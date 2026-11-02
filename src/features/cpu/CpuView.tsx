@@ -1,9 +1,10 @@
-import { AlertCircle, Binary } from 'lucide-react'
+import { AlertCircle, Binary, Link2, PencilLine, Undo2 } from 'lucide-react'
 import { useSettings } from '../../app/settings'
 import { formatError, t } from '../../i18n'
 import { ConsolePanel } from './components/ConsolePanel'
 import { Controls } from './components/Controls'
 import { CpuPanel } from './components/CpuPanel'
+import { CSourcePane } from './components/CSourcePane'
 import { renderCode } from './components/renderCode'
 import { ExplanationPanel } from './components/ExplanationPanel'
 import { MemoryView } from './components/MemoryView'
@@ -19,6 +20,10 @@ function CodePanel() {
   const running = useCpu((s) => s.running)
   const showBytes = useSettings((s) => s.showBytes)
   const setSettings = useSettings((s) => s.set)
+  const linked = useCpu((s) => !!s.linked)
+  const hasSaved = useCpu((s) => s.savedSource !== null)
+  const unlink = useCpu((s) => s.unlink)
+  const T = t().tc.cpu
   return (
     <Panel
       title={t().panels.code}
@@ -39,7 +44,28 @@ function CodePanel() {
         </>
       }
     >
-      <CodeEditor />
+      {(linked || hasSaved) && (
+        <div className="linked-banner" role="status">
+          {linked && (
+            <>
+              <Link2 size={14} aria-hidden />
+              <span>{T.linkedBanner}</span>
+              <button type="button" className="chip" onClick={() => unlink('edit')} title={T.editAsAsmTitle}>
+                <PencilLine size={14} aria-hidden /> {T.editAsAsm}
+              </button>
+            </>
+          )}
+          {hasSaved && (
+            <button type="button" className="chip" onClick={() => unlink('restore')} title={T.restoreTitle}>
+              <Undo2 size={14} aria-hidden /> {T.restore}
+            </button>
+          )}
+        </div>
+      )}
+      <div className={linked ? 'code-split' : 'code-single'}>
+        <CodeEditor />
+        {linked && <CSourcePane />}
+      </div>
       {running && <div className="editor-locked">{t().editor.lockedHint}</div>}
       {errors.length > 0 && (
         <div className="error-list" role="alert">

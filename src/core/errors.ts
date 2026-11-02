@@ -35,6 +35,10 @@ export type ErrorCode =
   | 'divByZeroExpr'
   | 'movzx32'
   | 'pushSize'
+  | 'externNeedsLinker'
+  | 'badRelocation'
+  | 'externDefined'
+  | 'globalUndefined'
 
 export interface AsmError {
   /** 1-based source line */

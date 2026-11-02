@@ -1,9 +1,10 @@
 import { AsmException, fail, type AsmError } from './errors'
 import { evaluate, isRelocatable, linearize, type EvalContext, type Expr } from './expr'
-import { encode } from './encoder'
+import { encode, type Field } from './encoder'
+import { termOf, type ObjectFile, type ObjSymbol, type Relocation, type RelocType } from './object'
 import { bssBase, dataBase, STACK_TOP, TEXT_BASE } from './layout'
 import { parse, type OperandAst, type Stmt } from './parser'
-import type { Instruction, MemOperand, Operand, Scale } from './types'
+import type { Instruction, MemOperand, Operand, Scale, SymTerm } from './types'
 import { fitsEither, type Size } from './util'
 
 export type SectionName = 'text' | 'data' | 'bss'
@@ -72,9 +73,34 @@ interface PassResult {
   errors: AsmError[]
   newLong: boolean
   lineToAddress: Map<number, number>
+  relocations: Relocation[]
 }
 
-function resolveMem(ast: Extract<OperandAst, { k: 'mem' }>, ctx: EvalContext, defaultRel: boolean): MemOperand {
+export type AsmMode = 'exec' | 'object'
+
+/** Per-assembly state shared by all passes. */
+interface Env {
+  mode: AsmMode
+  externs: Set<string>
+  /** Section of every label (stable across passes). */
+  labelSec: Map<string, SectionName>
+}
+
+function termFor(e: Expr, ctx: EvalContext, env: Env, sec: SectionName): SymTerm | undefined {
+  if (env.mode !== 'object') return undefined
+  const t = termOf(e, ctx, (n) => (env.externs.has(n) ? 'extern' : env.labelSec.get(n)), sec)
+  if (t === 'invalid') fail('badRelocation')
+  return t ?? undefined
+}
+
+function relocType(size: number, pcRel: boolean, signExtended: boolean): RelocType {
+  if (pcRel) return 'R_X86_64_PC32'
+  if (size === 8) return 'R_X86_64_64'
+  if (size === 4) return signExtended ? 'R_X86_64_32S' : 'R_X86_64_32'
+  return size === 2 ? 'R_X86_64_16' : 'R_X86_64_8'
+}
+
+function resolveMem(ast: Extract<OperandAst, { k: 'mem' }>, ctx: EvalContext, defaultRel: boolean, env: Env, sec: SectionName): MemOperand {
   const lin = linearize(ast.expr, ctx)
   for (const r of lin.regs) if (r.reg.size !== 8) fail('address32', { name: r.reg.name })
   let base: MemOperand['base']
@@ -120,16 +146,17 @@ function resolveMem(ast: Extract<OperandAst, { k: 'mem' }>, ctx: EvalContext, de
     disp: lin.disp ?? 0n,
     ripRel: rel && !base && !index && isRelocatable(ast.expr, ctx),
     text: ast.text,
+    term: termFor(ast.expr, ctx, env, sec),
   }
 }
 
-function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<string>, prevSizes: Record<SectionName, number>, longJumps: Set<number>, final: boolean): PassResult {
-  const starts: Record<SectionName, number> = {
-    text: TEXT_BASE,
-    data: dataBase(prevSizes.text),
-    bss: 0,
-  }
-  starts.bss = bssBase(starts.data, prevSizes.data)
+function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<string>, prevSizes: Record<SectionName, number>, longJumps: Set<number>, final: boolean, env: Env): PassResult {
+  const object = env.mode === 'object'
+  // Object files: every section starts at offset 0; the linker assigns addresses later.
+  const starts: Record<SectionName, number> = object
+    ? { text: 0, data: 0, bss: 0 }
+    : { text: TEXT_BASE, data: dataBase(prevSizes.text), bss: 0 }
+  if (!object) starts.bss = bssBase(starts.data, prevSizes.data)
   const values = new Map<string, bigint>()
   const labels = new Set<string>(prevLabels)
   const symbols: SymbolInfo[] = []
@@ -139,21 +166,24 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
   const dataItems: DataItemInfo[] = []
   const errors: AsmError[] = []
   const lineToAddress = new Map<number, number>()
+  const relocations: Relocation[] = []
   let sec: SectionName = 'text'
   let defaultRel = false
   let newLong = false
 
   const here = () => BigInt(starts[sec] + offs[sec])
   const ctx = (): EvalContext => ({
-    lookup: (n) => values.get(n) ?? prev.get(n),
+    lookup: (n) => values.get(n) ?? prev.get(n) ?? (env.externs.has(n) ? 0n : undefined),
     here: here(),
     start: BigInt(starts[sec]),
     final,
-    isLabel: (n) => labels.has(n),
+    isLabel: (n) => labels.has(n) || env.externs.has(n),
   })
   const define = (name: string, value: bigint, kind: 'label' | 'equ', line: number) => {
     if (values.has(name)) fail('duplicateSymbol', { name })
+    if (env.externs.has(name)) fail('externDefined', { name })
     values.set(name, value)
+    if (kind === 'label') env.labelSec.set(name, sec)
     symbols.push({ name, value, kind, section: kind === 'label' ? sec : undefined, line })
   }
   const emit = (b: number[]) => {
@@ -174,6 +204,9 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
           defaultRel = st.rel
           return
         case 'global':
+          return
+        case 'extern':
+          if (!object) fail('externNeedsLinker', { name: st.names.join(', ') })
           return
         case 'label':
           labels.add(st.name)
@@ -215,8 +248,18 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
               } else {
                 const c = { ...ctx(), here: BigInt(start + out.length) }
                 const v = evaluate(item.e, c) ?? 0n
-                if (final && !fitsEither(v, st.unit)) fail('immOutOfRange', { value: v.toString(), size: st.unit })
+                const term = termFor(item.e, c, env, sec)
+                if (final && !term && !fitsEither(v, st.unit)) fail('immOutOfRange', { value: v.toString(), size: st.unit })
                 let x = v
+                if (term) {
+                  if (final) {
+                    relocations.push({
+                      section: sec, offset: start - starts[sec] + out.length, size: st.unit, type: relocType(st.unit, false, false),
+                      target: term, addend: v, pcRel: false, line: st.line,
+                    })
+                  }
+                  x = 0n // the linker fills in the address
+                }
                 for (let i = 0; i < st.unit; i++) {
                   out.push(Number(x & 0xffn))
                   x >>= 8n
@@ -237,18 +280,23 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
           const isBranch = ['jmp', 'jcc', 'call', 'loop'].includes(st.dec.op)
           const operands: Operand[] = st.operands.map((o): Operand => {
             if (o.k === 'reg') return { k: 'reg', reg: o.reg, text: o.text }
-            if (o.k === 'mem') return resolveMem(o, c, defaultRel)
+            if (o.k === 'mem') return resolveMem(o, c, defaultRel, env, sec)
             const v = evaluate(o.expr as Expr, c)
             const reloc = isRelocatable(o.expr, c)
-            if (v === null) return { k: 'imm', value: isBranch ? BigInt(address) : 0n, size: o.size, text: o.text, unresolved: true, reloc }
-            return { k: 'imm', value: v, size: o.size, text: o.text, reloc }
+            const term = termFor(o.expr, c, env, sec)
+            if (v === null) return { k: 'imm', value: isBranch ? BigInt(address) : 0n, size: o.size, text: o.text, unresolved: true, reloc, term }
+            return { k: 'imm', value: v, size: o.size, text: o.text, reloc, term }
           })
+          // A branch to another section or to an extern symbol is only resolved by the linker: always rel32.
+          const t0 = isBranch && operands[0]?.k === 'imm' ? operands[0].term : undefined
+          const farBranch = !!t0 && (t0.kind === 'extern' || t0.section !== 'text')
+          if (farBranch && st.dec.op === 'loop') fail('badRelocation')
           let enc
           try {
-            enc = encode({ op: st.dec.op, cond: st.dec.cond, mnemonic: st.mnemonic, operands }, { address, longJump: longJumps.has(si) })
+            enc = encode({ op: st.dec.op, cond: st.dec.cond, mnemonic: st.mnemonic, operands }, { address, longJump: farBranch || longJumps.has(si) })
           } catch (e) {
             if (final) throw e
-            enc = { bytes: [0], opSize: undefined, jumpOutOfRange: false }
+            enc = { bytes: [0], opSize: undefined, jumpOutOfRange: false, fields: {} }
           }
           if (enc.jumpOutOfRange) {
             if (st.dec.op === 'loop') {
@@ -259,6 +307,25 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
             }
           }
           const target = isBranch && operands[0]?.k === 'imm' ? Number(operands[0].value) : undefined
+          if (object && final) {
+            operands.forEach((o, oi) => {
+              if (o.k === 'reg' || !o.term) return
+              const field: Field | undefined = o.k === 'mem' ? enc.fields.disp : isBranch ? enc.fields.rel : enc.fields.imm
+              const pcRel = isBranch || (o.k === 'mem' && o.ripRel)
+              // PC-relative references inside .text are already correct; everything else is patched by the linker.
+              if (pcRel && o.term.kind === 'section' && o.term.section === 'text') return
+              if (!field || field.size < 2) fail('badRelocation')
+              const value = o.k === 'mem' ? o.disp : o.value
+              const addend = pcRel ? value - BigInt(enc.bytes.length - field.offset) : value
+              const signExt = o.k === 'mem' || (enc.opSize === 8 && field.size === 4)
+              enc.bytes.fill(0, field.offset, field.offset + field.size)
+              relocations.push({
+                section: 'text', offset: address + field.offset, size: field.size as 1 | 2 | 4 | 8,
+                type: relocType(field.size, pcRel, signExt), target: o.term, addend, pcRel, line: st.line,
+                instr: instructions.length, operand: oi,
+              })
+            })
+          }
           instructions.push({
             id: instructions.length,
             op: st.dec.op,
@@ -286,7 +353,7 @@ function runPass(stmts: Stmt[], prev: Map<string, bigint>, prevLabels: Set<strin
     }
   })
 
-  return { values, labels, symbols, sizes: { ...offs }, instructions, bytes, dataItems, errors, newLong, lineToAddress }
+  return { values, labels, symbols, sizes: { ...offs }, instructions, bytes, dataItems, errors, newLong, lineToAddress, relocations }
 }
 
 function sameMap(a: Map<string, bigint>, b: Map<string, bigint>): boolean {
@@ -305,26 +372,8 @@ function emptySourceMap(): SourceMap {
  */
 export function assemble(source: string): AssembleResult {
   const parsed = parse(source)
-  const longJumps = new Set<number>()
-  let prev = new Map<string, bigint>()
-  let labels = new Set<string>()
-  let prevSizes: Record<SectionName, number> = { text: 0, data: 0, bss: 0 }
-  let stable = false
-  for (let pass = 0; pass < MAX_PASSES; pass++) {
-    const r = runPass(parsed.stmts, prev, labels, prevSizes, longJumps, false)
-    labels = r.labels
-    const same = sameMap(r.values, prev) && !r.newLong && r.sizes.text === prevSizes.text && r.sizes.data === prevSizes.data
-    prev = r.values
-    prevSizes = r.sizes
-    if (same) {
-      stable = true
-      break
-    }
-  }
-  const r = runPass(parsed.stmts, prev, labels, prevSizes, longJumps, true)
-  const errors = [...parsed.errors, ...r.errors]
-  if (!stable && !errors.length) errors.push({ line: 1, code: 'noConvergence' })
-  errors.sort((a, b) => a.line - b.line)
+  const env: Env = { mode: 'exec', externs: new Set(), labelSec: new Map() }
+  const { r, errors } = runPasses(parsed, env)
 
   const sourceMap = emptySourceMap()
   sourceMap.lineToAddress = r.lineToAddress
@@ -356,4 +405,90 @@ export function assemble(source: string): AssembleResult {
     sourceMap,
   }
   return { program, symbols: r.symbols, sourceMap, errors: [] }
+}
+
+export interface AssembleObjectResult {
+  object: ObjectFile | null
+  errors: AsmError[]
+}
+
+/**
+ * Assemble one translation unit into an object file: every section starts at 0, and each
+ * place whose address is only known after linking gets a relocation (bytes left as 0).
+ */
+export function assembleObject(source: string, name: string): AssembleObjectResult {
+  const parsed = parse(source)
+  const env: Env = { mode: 'object', externs: new Set(), labelSec: new Map() }
+  const globals = new Map<string, number>()
+  for (const st of parsed.stmts) {
+    if (st.kind === 'extern') for (const n of st.names) env.externs.add(n)
+    if (st.kind === 'global') for (const n of st.names) globals.set(n, st.line)
+  }
+  const { r, errors } = runPasses(parsed, env)
+  for (const [g, line] of globals) if (!r.values.has(g)) errors.push({ line, code: 'globalUndefined', params: { name: g } })
+  errors.sort((a, b) => a.line - b.line)
+  if (errors.length) return { object: null, errors }
+
+  const symbols: ObjSymbol[] = r.symbols.map((s) => ({
+    name: s.name,
+    value: s.value,
+    section: s.kind === 'equ' ? 'ABS' : s.section!,
+    binding: globals.has(s.name) ? 'global' : 'local',
+    line: s.line,
+  }))
+  const externLine = new Map<string, number>()
+  for (const st of parsed.stmts) if (st.kind === 'extern') for (const n of st.names) if (!externLine.has(n)) externLine.set(n, st.line)
+  for (const [n, line] of externLine) symbols.push({ name: n, value: 0n, section: 'UND', binding: 'global', line })
+
+  const lineToOffset = new Map<number, { section: SectionName; offset: number }>()
+  for (const [line, offset] of r.lineToAddress) lineToOffset.set(line, { section: sectionOfLine(parsed.stmts, line), offset })
+  const object: ObjectFile = {
+    name,
+    source,
+    sections: {
+      text: { name: 'text', size: r.sizes.text, bytes: Uint8Array.from(r.bytes.text) },
+      data: { name: 'data', size: r.sizes.data, bytes: Uint8Array.from(r.bytes.data) },
+      bss: { name: 'bss', size: r.sizes.bss, bytes: new Uint8Array(r.sizes.bss) },
+    },
+    instructions: r.instructions,
+    symbols,
+    relocations: r.relocations,
+    dataItems: r.dataItems,
+    lineToOffset,
+  }
+  return { object, errors: [] }
+}
+
+/** The section a statement on `line` belongs to (last `section` directive before it). */
+function sectionOfLine(stmts: Stmt[], line: number): SectionName {
+  let sec: SectionName = 'text'
+  for (const st of stmts) {
+    if (st.line > line) break
+    if (st.kind === 'section') sec = st.name
+  }
+  return sec
+}
+
+function runPasses(parsed: ReturnType<typeof parse>, env: Env): { r: PassResult; errors: AsmError[] } {
+  const longJumps = new Set<number>()
+  let prev = new Map<string, bigint>()
+  let labels = new Set<string>()
+  let prevSizes: Record<SectionName, number> = { text: 0, data: 0, bss: 0 }
+  let stable = false
+  for (let pass = 0; pass < MAX_PASSES; pass++) {
+    const r = runPass(parsed.stmts, prev, labels, prevSizes, longJumps, false, env)
+    labels = r.labels
+    const same = sameMap(r.values, prev) && !r.newLong && r.sizes.text === prevSizes.text && r.sizes.data === prevSizes.data
+    prev = r.values
+    prevSizes = r.sizes
+    if (same) {
+      stable = true
+      break
+    }
+  }
+  const r = runPass(parsed.stmts, prev, labels, prevSizes, longJumps, true, env)
+  const errors = [...parsed.errors, ...r.errors]
+  if (!stable && !errors.length) errors.push({ line: 1, code: 'noConvergence' })
+  errors.sort((a, b) => a.line - b.line)
+  return { r, errors }
 }

@@ -1,7 +1,8 @@
 import { fail } from './errors'
 
 export type Token =
-  | { t: 'id'; v: string; col: number }
+  /** raw: written as `$name`, so it is a symbol even if it looks like a register or keyword (NASM). */
+  | { t: 'id'; v: string; col: number; raw?: boolean }
   | { t: 'num'; v: bigint; col: number }
   | { t: 'str'; v: number[]; col: number }
   | { t: 'op'; v: string; col: number }
@@ -103,6 +104,12 @@ export function tokenize(src: string): Token[] {
       const m = src.slice(i).match(/^[0-9][0-9a-zA-Z_]*/)!
       out.push({ t: 'num', v: parseNumber(m[0]), col })
       i += m[0].length
+      continue
+    }
+    if (c === '$' && /[A-Za-z_.?@]/.test(src[i + 1] ?? '')) {
+      const m = src.slice(i + 1).match(/^[A-Za-z_.?@][A-Za-z0-9_.?@$#~]*/)!
+      out.push({ t: 'id', v: m[0], col, raw: true })
+      i += 1 + m[0].length
       continue
     }
     if (/[A-Za-z_.?@]/.test(c)) {

@@ -338,6 +338,21 @@ export function explain(tr: StepTrace, program: Program): Explanation {
       skipRegs.add(4)
       break
     }
+    case 'cbw':
+    case 'cwde':
+    case 'cdqe': {
+      const half = (size / 2) as Size
+      const after = trunc(written()!.after, size)
+      summary = E.signExtend(text, regName(0, size), regName(0, half), fmt(after, size), msb(after, size) ? '1' : '0')
+      break
+    }
+    case 'cwd':
+    case 'cdq':
+    case 'cqo': {
+      const after = trunc(written()!.after, size)
+      summary = E.signExtendPair(text, regName(2, size), regName(0, size), fmt(after, size), after ? '1' : '0')
+      break
+    }
     case 'nop':
       summary = E.nop(text)
       break
